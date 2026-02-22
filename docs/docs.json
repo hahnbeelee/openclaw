@@ -46,6 +46,11 @@
       }
     ]
   },
+  "contextual": {
+    "options": [
+      "copy"
+    ]
+  },
   "redirects": [
     {
       "source": "/messages",
