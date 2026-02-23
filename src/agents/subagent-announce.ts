@@ -556,7 +556,11 @@ async function maybeQueueSubagentAnnounce(params: {
   triggerMessage: string;
   summaryLine?: string;
   requesterOrigin?: DeliveryContext;
+  signal?: AbortSignal;
 }): Promise<"steered" | "queued" | "none"> {
+  if (params.signal?.aborted) {
+    return "none";
+  }
   const { cfg, entry } = loadRequesterSessionEntry(params.requesterSessionKey);
   const canonicalKey = resolveRequesterStoreKey(cfg, params.requesterSessionKey);
   const sessionId = entry?.sessionId;
@@ -631,13 +635,21 @@ async function sendSubagentAnnounceDirectly(params: {
   triggerMessage: string;
   completionMessage?: string;
   expectsCompletionMessage: boolean;
+  bestEffortDeliver?: boolean;
   completionRouteMode?: "bound" | "fallback" | "hook";
   spawnMode?: SpawnSubagentMode;
   directIdempotencyKey: string;
   completionDirectOrigin?: DeliveryContext;
   directOrigin?: DeliveryContext;
   requesterIsSubagent: boolean;
+  signal?: AbortSignal;
 }): Promise<SubagentAnnounceDeliveryResult> {
+  if (params.signal?.aborted) {
+    return {
+      delivered: false,
+      path: "none",
+    };
+  }
   const cfg = loadConfig();
   const announceTimeoutMs = resolveSubagentAnnounceTimeoutMs(cfg);
   const canonicalRequesterSessionKey = resolveRequesterStoreKey(
@@ -691,6 +703,12 @@ async function sendSubagentAnnounceDirectly(params: {
           completionDirectOrigin?.threadId != null && completionDirectOrigin.threadId !== ""
             ? String(completionDirectOrigin.threadId)
             : undefined;
+        if (params.signal?.aborted) {
+          return {
+            delivered: false,
+            path: "none",
+          };
+        }
         await callGateway({
           method: "send",
           params: {
@@ -717,12 +735,19 @@ async function sendSubagentAnnounceDirectly(params: {
       directOrigin?.threadId != null && directOrigin.threadId !== ""
         ? String(directOrigin.threadId)
         : undefined;
+    if (params.signal?.aborted) {
+      return {
+        delivered: false,
+        path: "none",
+      };
+    }
     await callGateway({
       method: "agent",
       params: {
         sessionKey: canonicalRequesterSessionKey,
         message: params.triggerMessage,
         deliver: !params.requesterIsSubagent,
+        bestEffortDeliver: params.bestEffortDeliver,
         channel: params.requesterIsSubagent ? undefined : directOrigin?.channel,
         accountId: params.requesterIsSubagent ? undefined : directOrigin?.accountId,
         to: params.requesterIsSubagent ? undefined : directOrigin?.to,
@@ -758,10 +783,18 @@ async function deliverSubagentAnnouncement(params: {
   targetRequesterSessionKey: string;
   requesterIsSubagent: boolean;
   expectsCompletionMessage: boolean;
+  bestEffortDeliver?: boolean;
   completionRouteMode?: "bound" | "fallback" | "hook";
   spawnMode?: SpawnSubagentMode;
   directIdempotencyKey: string;
+  signal?: AbortSignal;
 }): Promise<SubagentAnnounceDeliveryResult> {
+  if (params.signal?.aborted) {
+    return {
+      delivered: false,
+      path: "none",
+    };
+  }
   // Non-completion mode mirrors historical behavior: try queued/steered delivery first,
   // then (only if not queued) attempt direct delivery.
   if (!params.expectsCompletionMessage) {
@@ -771,6 +804,7 @@ async function deliverSubagentAnnouncement(params: {
       triggerMessage: params.triggerMessage,
       summaryLine: params.summaryLine,
       requesterOrigin: params.requesterOrigin,
+      signal: params.signal,
     });
     const queued = queueOutcomeToDeliveryResult(queueOutcome);
     if (queued.delivered) {
@@ -791,6 +825,8 @@ async function deliverSubagentAnnouncement(params: {
     directOrigin: params.directOrigin,
     requesterIsSubagent: params.requesterIsSubagent,
     expectsCompletionMessage: params.expectsCompletionMessage,
+    signal: params.signal,
+    bestEffortDeliver: params.bestEffortDeliver,
   });
   if (direct.delivered || !params.expectsCompletionMessage) {
     return direct;
@@ -804,6 +840,7 @@ async function deliverSubagentAnnouncement(params: {
     triggerMessage: params.triggerMessage,
     summaryLine: params.summaryLine,
     requesterOrigin: params.requesterOrigin,
+    signal: params.signal,
   });
   if (queueOutcome === "steered" || queueOutcome === "queued") {
     return queueOutcomeToDeliveryResult(queueOutcome);
@@ -956,6 +993,8 @@ export async function runSubagentAnnounceFlow(params: {
   announceType?: SubagentAnnounceType;
   expectsCompletionMessage?: boolean;
   spawnMode?: SpawnSubagentMode;
+  signal?: AbortSignal;
+  bestEffortDeliver?: boolean;
 }): Promise<boolean> {
   let didAnnounce = false;
   const expectsCompletionMessage = params.expectsCompletionMessage === true;
@@ -1213,9 +1252,11 @@ export async function runSubagentAnnounceFlow(params: {
       targetRequesterSessionKey,
       requesterIsSubagent,
       expectsCompletionMessage: expectsCompletionMessage,
+      bestEffortDeliver: params.bestEffortDeliver,
       completionRouteMode: completionResolution.routeMode,
       spawnMode: params.spawnMode,
       directIdempotencyKey,
+      signal: params.signal,
     });
     didAnnounce = delivery.delivered;
     if (!delivery.delivered && delivery.path === "direct" && delivery.error) {
